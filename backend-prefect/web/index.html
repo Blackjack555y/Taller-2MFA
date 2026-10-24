@@ -1,0 +1,183 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Taller 2MFA</title>
+<style>
+  :root { --bg:#0f172a; --card:#1e293b; --fg:#e2e8f0; --muted:#94a3b8; --acc:#38bdf8; --ok:#4ade80; --err:#f87171; }
+  * { box-sizing: border-box; }
+  body { margin:0; font-family: system-ui, sans-serif; background:var(--bg); color:var(--fg); }
+  main { max-width: 520px; margin: 0 auto; padding: 24px 16px; }
+  h1 { font-size: 1.4rem; } h2 { font-size: 1.1rem; margin-top: 0; }
+  .card { background:var(--card); border-radius:12px; padding:20px; margin-bottom:16px; }
+  label { display:block; font-size:.85rem; color:var(--muted); margin:10px 0 4px; }
+  input, select { width:100%; padding:10px; border-radius:8px; border:1px solid #334155; background:#0f172a; color:var(--fg); font-size:1rem; }
+  input.code { font-size:1.6rem; letter-spacing:.3em; text-align:center; font-family: ui-monospace, monospace; }
+  button { margin-top:14px; padding:10px 16px; border:0; border-radius:8px; background:var(--acc); color:#0f172a; font-weight:600; cursor:pointer; font-size:1rem; }
+  button.secondary { background:#334155; color:var(--fg); }
+  .row { display:flex; gap:8px; flex-wrap:wrap; }
+  .msg { margin-top:12px; padding:10px; border-radius:8px; font-size:.9rem; white-space:pre-wrap; word-break:break-word; }
+  .msg.ok { background:#14532d; color:var(--ok); } .msg.err { background:#450a0a; color:var(--err); }
+  .hidden { display:none; }
+  .qr { background:#fff; border-radius:8px; padding:8px; display:block; margin:12px auto; max-width:240px; }
+  code, .mono { font-family: ui-monospace, monospace; word-break: break-all; }
+  .codes { display:grid; grid-template-columns:repeat(2,1fr); gap:6px; font-family:ui-monospace,monospace; }
+  .muted { color:var(--muted); font-size:.85rem; }
+</style>
+</head>
+<body>
+<main>
+  <h1>🔐 Taller 2MFA · Step-Up Auth</h1>
+
+  <section class="card" id="step-login">
+    <h2>1. Usuario y contraseña</h2>
+    <label for="user">Usuario</label>
+    <input id="user" autocomplete="username">
+    <label for="pass">Contraseña</label>
+    <input id="pass" type="password" autocomplete="current-password">
+    <div class="row">
+      <button id="btn-login">Iniciar sesión</button>
+      <button id="btn-register" class="secondary">Registrarme</button>
+    </div>
+    <div id="msg-login"></div>
+  </section>
+
+  <section class="card hidden" id="step-setup">
+    <h2>2. Activar doble factor</h2>
+    <p class="muted">Tu 2FA está en estado <b id="mfa-state"></b>. Escanea el QR con tu app (o con Google/Microsoft Authenticator) y escribe el primer código para activarlo.</p>
+    <button id="btn-setup">Generar QR</button>
+    <div id="qr-box" class="hidden">
+      <img id="qr" class="qr" alt="Código QR otpauth">
+      <label>Semilla Base32 (para pegar manualmente en el emulador)</label>
+      <div class="mono" id="secret"></div>
+      <label for="activate-code">Primer código de 6 dígitos</label>
+      <input id="activate-code" class="code" inputmode="numeric" maxlength="6">
+      <button id="btn-activate">Activar 2FA</button>
+    </div>
+    <div id="msg-setup"></div>
+  </section>
+
+  <section class="card hidden" id="step-verify">
+    <h2>2. Verificación en dos pasos</h2>
+    <label for="method">Método</label>
+    <select id="method">
+      <option value="totp">Código de la app (TOTP, 6 dígitos)</option>
+      <option value="backup">Código de respaldo (8 dígitos)</option>
+    </select>
+    <label for="verify-code">Código</label>
+    <input id="verify-code" class="code" inputmode="numeric" maxlength="8">
+    <button id="btn-verify">Verificar</button>
+    <div id="msg-verify"></div>
+  </section>
+
+  <section class="card hidden" id="step-backup">
+    <h2>Códigos de respaldo</h2>
+    <p class="muted">Guárdalos: cada uno sirve una sola vez si pierdes el teléfono. No se volverán a mostrar.</p>
+    <div class="codes" id="backup-codes"></div>
+  </section>
+
+  <section class="card hidden" id="step-vault">
+    <h2>3. Recurso protegido</h2>
+    <button id="btn-vault">GET /api/boveda-secreta</button>
+    <button id="btn-logout" class="secondary">Cerrar sesión</button>
+    <div id="msg-vault"></div>
+    <details><summary class="muted">Ver access_token</summary><div class="mono muted" id="access-token"></div></details>
+  </section>
+</main>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const state = { preAuth: null, access: null };
+
+function show(...ids) {
+  for (const s of ["step-login", "step-setup", "step-verify", "step-backup", "step-vault"])
+    $(s).classList.toggle("hidden", !ids.includes(s));
+}
+
+function msg(id, text, ok) {
+  $(id).innerHTML = "";
+  const div = document.createElement("div");
+  div.className = "msg " + (ok ? "ok" : "err");
+  div.textContent = text;
+  $(id).appendChild(div);
+}
+
+async function api(path, body, token) {
+  const headers = { "Content-Type": "application/json" };
+  if (token) headers.Authorization = "Bearer " + token;
+  const res = await fetch(path, { method: body ? "POST" : "GET", headers, body: body ? JSON.stringify(body) : undefined });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    const detail = Array.isArray(data.detail) ? data.detail.map(d => d.msg).join("; ") : data.detail;
+    throw new Error(`HTTP ${res.status}: ${detail || res.statusText}`);
+  }
+  return data;
+}
+
+const creds = () => ({ username: $("user").value.trim(), password: $("pass").value });
+
+$("btn-register").onclick = async () => {
+  try { await api("/auth/register", creds()); msg("msg-login", "Usuario creado. Ahora inicia sesión.", true); }
+  catch (e) { msg("msg-login", e.message); }
+};
+
+$("btn-login").onclick = async () => {
+  try {
+    const r = await api("/auth/login", creds());
+    state.preAuth = r.pre_auth_token;
+    $("mfa-state").textContent = r.mfa_state;
+    if (r.mfa_state === "ACTIVE") { show("step-verify"); $("verify-code").focus(); }
+    else show("step-setup");
+  } catch (e) { msg("msg-login", e.message); }
+};
+
+$("btn-setup").onclick = async () => {
+  try {
+    const r = await api("/auth/2fa/setup", { pre_auth_token: state.preAuth });
+    $("mfa-state").textContent = r.mfa_state;
+    $("qr").src = r.qr_svg_data_uri;
+    $("secret").textContent = r.secret;
+    $("qr-box").classList.remove("hidden");
+  } catch (e) { msg("msg-setup", e.message); }
+};
+
+function enterVault(token) {
+  state.access = token;
+  $("access-token").textContent = token;
+}
+
+$("btn-activate").onclick = async () => {
+  try {
+    const r = await api("/auth/2fa/activate", { pre_auth_token: state.preAuth, code: $("activate-code").value });
+    enterVault(r.access_token);
+    $("backup-codes").innerHTML = r.backup_codes.map(c => `<span>${c}</span>`).join("");
+    show("step-backup", "step-vault");
+    msg("msg-vault", `2FA ACTIVO ✔ (ventana ${r.window})`, true);
+  } catch (e) { msg("msg-setup", e.message); }
+};
+
+$("btn-verify").onclick = async () => {
+  try {
+    const r = await api("/auth/verify-2fa", { pre_auth_token: state.preAuth, code: $("verify-code").value, method: $("method").value });
+    enterVault(r.access_token);
+    show("step-vault");
+    msg("msg-vault", `Verificado con ${r.method}${r.window ? " (ventana " + r.window + ")" : ""} ✔`, true);
+  } catch (e) { msg("msg-verify", e.message); }
+};
+
+$("btn-vault").onclick = async () => {
+  try { msg("msg-vault", JSON.stringify(await api("/api/boveda-secreta", null, state.access), null, 2), true); }
+  catch (e) { msg("msg-vault", e.message); }
+};
+
+$("btn-logout").onclick = () => {
+  state.preAuth = state.access = null;
+  $("verify-code").value = $("activate-code").value = "";
+  $("qr-box").classList.add("hidden");
+  for (const m of ["msg-login", "msg-setup", "msg-verify", "msg-vault"]) $(m).innerHTML = "";
+  show("step-login");
+};
+</script>
+</body>
+</html>

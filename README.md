@@ -115,20 +115,6 @@ Una vez abierta, la app no necesita red: el código se calcula localmente con el
 | POST | `/auth/verify-2fa` | pre_auth | Código TOTP o de respaldo → `access_token` |
 | GET | `/api/boveda-secreta` | access (`mfa_verified`) | Recurso protegido |
 
-## Guion de la demo (5 min)
-
-1. **Paridad estándar**: en la web app regístrate, inicia sesión y pulsa *Generar QR*. Escanéalo con esta app **y** con Google/Microsoft Authenticator: muestran los mismos 6 dígitos. Activa el 2FA con el código.
-2. **Modo avión**: activa el modo avión, espera a que cambie la ventana de 30 s, cierra sesión, inicia sesión de nuevo, ingresa el código y pulsa `GET /api/boveda-secreta`.
-3. **Anti-replay**: con un nuevo login, envía el mismo código que acabas de usar. La API responde `409 ReplayAttackDetected` y en <http://127.0.0.1:4200> el run de `verify-2fa-flow` aparece en rojo (**Failed**) en `check_anti_replay_cache`.
-4. **Clock skew / respaldo**: en la app elige `-30s` o `+30s` y verifica; en los logs de `execute_mfa_strategy` se lee `Match en ventana C-1 (reloj del celular ATRASADO)` o `C+1 (ADELANTADO)`. También puedes elegir *Código de respaldo* en la web app y usar uno de los 8 códigos.
-
-Para que la demo no falle:
-
-- **`-30s` muestra el código anterior.** Si ese código se acaba de usar, el backend lo rechaza como replay, lo cual es correcto. Antes de esa prueba espera a que la app cambie de código.
-- **Los códigos de respaldo se ven una sola vez**, al activar el 2FA. Anótalos o crea un usuario nuevo antes de la demo.
-- **El PC y el celular deben tener la hora automática activada.**
-- **Para el modo avión es más seguro instalar la app compilada** (`npx expo run:android` o un APK de EAS). Con Expo Go, si la app se recarga sin red, no puede volver a descargar el bundle.
-- **El plan gratis de Supabase pausa el proyecto tras ~7 días sin uso.** Ábrelo antes de la demo. Si está pausado, deja `SUPABASE_URL` vacío y el backend usa SQLite.
 
 > Nota: la caché anti-replay vive en memoria, así que se reinicia con `--reload`. Es lo que pide el alcance del laboratorio; en producción iría en Redis.
 
